@@ -1,0 +1,23 @@
+{
+  "name": "@ccx/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ccx": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ccx/schema": "workspace:*",
+    "@ccx/storage": "workspace:*",
+    "commander": "^14.0.3",
+    "smol-toml": "^1.6.1",
+    "zod": "^3.25.76"
+  }
+}

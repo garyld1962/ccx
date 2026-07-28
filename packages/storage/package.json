@@ -1,0 +1,28 @@
+{
+  "name": "@ccx/storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@ccx/schema": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.14.0",
+    "drizzle-kit": "^0.31.10"
+  }
+}

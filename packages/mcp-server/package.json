@@ -1,0 +1,24 @@
+{
+  "name": "@ccx/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ccx-mcp-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ccx/schema": "workspace:*",
+    "@ccx/storage": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "smol-toml": "^1.6.1",
+    "ulid": "^3.0.2",
+    "zod": "^3.25.76"
+  }
+}

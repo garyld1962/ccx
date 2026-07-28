@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+*.tsbuildinfo
+.ccx/local.db
+.superpowers/
+
+# Local AI session tooling — never published (skills live in savviety-skills)
+.claude/
+.claude.bak-*/
+.codex/
+.agents/
+CLAUDE.md
