@@ -25,12 +25,12 @@ test command and exit code if tests ran.
 
 - `packages/schema` — Zod envelope + payload schemas
 - `packages/storage` — Drizzle client, event append/query, digest, drift check
-- `packages/mcp-server` — stdio MCP server (8 tools)
+- `packages/mcp-server` — stdio MCP server (9 tools)
 - `packages/cli` — `ccx init|digest|tail|blocked|drift|replay|projects|hook`
 
 ## Proof
 
-- **147 tests across 25 files** — `pnpm test`
+- **152 tests across 25 files** — `pnpm test`
 - **Requires Docker**: the storage suite spins up an ephemeral `postgres:16-alpine` testcontainer and
   applies migrations per run. Coverage is concentrated in `schema` (73) and `storage` (45); the MCP
   tool handlers are the thin spot.
@@ -54,14 +54,19 @@ chmod 600 ~/.ccx/config.toml     # hooks read from here, not the environment
 psql "$(python3 -c "import tomllib,os;print(tomllib.load(open(os.path.expanduser('~/.ccx/config.toml'),'rb'))['database_url'])")" \
   -f packages/storage/drizzle/0001_*.sql
 
-# 3. In any project repo
-node <path-to-ccx>/packages/cli/dist/index.js init   # creates .ccx/project.toml
+# 3. Put `ccx` and `ccx-configure` on PATH, and register the hooks + MCP server
+./scripts/ccx-configure --install-path --install-global
+
+# 4. In any project repo, from then on
+ccx-configure
 ```
 
-Then register the five hooks (SessionStart, SessionEnd, TaskCreated, TaskCompleted, and PostToolUse
-matching `Write|Edit|MultiEdit|NotebookEdit`) in `~/.claude/settings.json`, each running
-`node <path-to-ccx>/packages/cli/dist/index.js hook <event>` with a 10s timeout and reading hook JSON
-from stdin. For the semantic tools, register the MCP server in `~/.claude.json`.
+`ccx-configure` verifies the machine-wide plumbing — node >= 22, the built `dist/` entrypoints, a
+reachable `database_url`, the five hooks (SessionStart, SessionEnd, TaskCreated, TaskCompleted, and
+PostToolUse matching `Write|Edit|MultiEdit|NotebookEdit`) in `~/.claude/settings.json`, and the
+`ccx` MCP server in `~/.claude.json` — then runs `ccx init` to write `.ccx/project.toml`. By default
+it only *reports* missing global wiring; `--install-global` adds what is absent, backing up each
+file to `~/.ccx/backups/` first. `--check` verifies and writes nothing. Every path is idempotent.
 
 ## License
 

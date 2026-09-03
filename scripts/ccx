@@ -1,0 +1,11 @@
+#!/bin/sh
+# Thin wrapper around the built ccx CLI, so it can live on PATH as a symlink.
+set -e
+self=$(readlink -f "$0")
+root=$(cd "$(dirname "$self")/.." && pwd)
+cli="$root/packages/cli/dist/index.js"
+if [ ! -f "$cli" ]; then
+  echo "ccx: $cli is missing. Run 'pnpm install && pnpm build' in $root." >&2
+  exit 1
+fi
+exec node "$cli" "$@"

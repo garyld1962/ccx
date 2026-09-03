@@ -1,0 +1,245 @@
+#!/bin/sh
+# ccx-configure — verify the machine-wide ccx plumbing, then register the
+# current repo by writing .ccx/project.toml.
+#
+#   ccx-configure                  verify globals, then init the current repo
+#   ccx-configure --check          verify only, touch nothing
+#   ccx-configure --install-path   symlink ccx and ccx-configure into ~/.local/bin
+#   ccx-configure --install-global add any missing hooks / MCP entry (backs up first)
+set -eu
+
+self=$(readlink -f "$0")
+SCRIPTS=$(dirname "$self")
+CCX_HOME=$(cd "$SCRIPTS/.." && pwd)
+CLI="$CCX_HOME/packages/cli/dist/index.js"
+MCP="$CCX_HOME/packages/mcp-server/dist/index.js"
+BIN_DIR="${CCX_BIN_DIR:-$HOME/.local/bin}"
+BACKUP_DIR="$HOME/.ccx/backups"
+
+DO_INIT=1
+INSTALL_PATH=0
+INSTALL_GLOBAL=0
+ERRORS=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check)          DO_INIT=0 ;;
+    --install-path)   INSTALL_PATH=1 ;;
+    --install-global) INSTALL_GLOBAL=1 ;;
+    -h|--help)        sed -n '2,8p' "$self" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)                echo "ccx-configure: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; }
+bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; ERRORS=$((ERRORS + 1)); }
+note() { printf '  \033[33m..\033[0m    %s\n' "$1"; }
+head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# ---------------------------------------------------------------- path install
+if [ "$INSTALL_PATH" = 1 ]; then
+  head_ "PATH"
+  mkdir -p "$BIN_DIR"
+  ln -sf "$SCRIPTS/ccx" "$BIN_DIR/ccx"
+  ln -sf "$SCRIPTS/ccx-configure" "$BIN_DIR/ccx-configure"
+  ok "linked ccx and ccx-configure into $BIN_DIR"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) : ;;
+    *) note "$BIN_DIR is not on PATH — add it to your shell rc" ;;
+  esac
+fi
+
+# ------------------------------------------------------------------ toolchain
+head_ "Toolchain"
+if command -v node >/dev/null 2>&1; then
+  major=$(node -p 'process.versions.node.split(".")[0]')
+  if [ "$major" -ge 22 ]; then ok "node $(node -v)"; else bad "node $(node -v) — ccx needs >= 22"; fi
+else
+  bad "node not found"
+fi
+command -v python3 >/dev/null 2>&1 || bad "python3 not found (needed to edit Claude Code config)"
+
+head_ "Build"
+[ -f "$CLI" ] && ok "cli   $CLI" || bad "cli missing — run 'pnpm install && pnpm build' in $CCX_HOME"
+[ -f "$MCP" ] && ok "mcp   $MCP" || bad "mcp-server missing — run 'pnpm install && pnpm build' in $CCX_HOME"
+
+# --------------------------------------------------------------------- config
+head_ "Database"
+CFG="$HOME/.ccx/config.toml"
+if [ -n "${CCX_DATABASE_URL:-}" ]; then
+  ok "CCX_DATABASE_URL is set in the environment"
+elif [ -f "$CFG" ]; then
+  if grep -q '^[[:space:]]*database_url[[:space:]]*=' "$CFG"; then
+    ok "$CFG has database_url"
+    perms=$(stat -c '%a' "$CFG")
+    [ "$perms" = 600 ] || note "$CFG is mode $perms — 'chmod 600' it, hooks read the DSN from here"
+  else
+    bad "$CFG has no database_url key"
+  fi
+else
+  bad "$CFG not found — write 'database_url = \"postgresql://...\"' there and chmod 600 it"
+fi
+
+if [ "$ERRORS" = 0 ]; then
+  if node "$CLI" projects >/dev/null 2>&1; then
+    ok "database reachable"
+  else
+    bad "cannot reach the database — check the DSN and that migrations are applied"
+  fi
+fi
+
+# ------------------------------------------------------- global Claude wiring
+head_ "Claude Code (machine-wide)"
+set +e
+python3 - "$CLI" "$MCP" "$INSTALL_GLOBAL" "$BACKUP_DIR" <<'PY'
+import json, os, shutil, sys, time
+
+cli, mcp, install, backup_dir = sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4]
+settings = os.path.expanduser("~/.claude/settings.json")
+claude_json = os.path.expanduser("~/.claude.json")
+GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
+rc = 0
+
+def ok(m):   print(f"  {GREEN}ok{RESET}    {m}")
+def bad(m):
+    global rc
+    rc += 1
+    print(f"  {RED}FAIL{RESET}  {m}")
+def note(m): print(f"  {YELLOW}..{RESET}    {m}")
+
+# (event, matcher) -> hook subcommand
+HOOKS = [
+    ("SessionStart",   None,                                 "session-start"),
+    ("SessionEnd",     None,                                 "session-end"),
+    ("TaskCreated",    None,                                 "task-created"),
+    ("TaskCompleted",  None,                                 "task-completed"),
+    ("PostToolUse",    "Write|Edit|MultiEdit|NotebookEdit",  "post-tool-use"),
+]
+
+def load(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path) as fh:
+        return json.load(fh)
+
+def backup(path):
+    os.makedirs(backup_dir, exist_ok=True)
+    dest = os.path.join(backup_dir, f"{os.path.basename(path)}.{time.strftime('%Y%m%dT%H%M%S')}")
+    shutil.copy2(path, dest)
+    note(f"backed up {path} -> {dest}")
+
+def save(path, data):
+    tmp = path + ".ccx-tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+try:
+    s = load(settings)
+except json.JSONDecodeError as exc:
+    bad(f"{settings} is not valid JSON ({exc}) — refusing to touch it")
+    sys.exit(1)
+
+hooks = s.setdefault("hooks", {})
+missing = []
+for event, matcher, sub in HOOKS:
+    cmd = f"node {cli} hook {sub}"
+    found = any(
+        h.get("command") == cmd
+        for grp in hooks.get(event, [])
+        for h in grp.get("hooks", [])
+    )
+    if found:
+        ok(f"hook {event}")
+    else:
+        missing.append((event, matcher, cmd))
+
+if missing and not install:
+    for event, _, _ in missing:
+        bad(f"hook {event} not registered — rerun with --install-global")
+elif missing:
+    if os.path.exists(settings):
+        backup(settings)
+    for event, matcher, cmd in missing:
+        entry = {"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}
+        if matcher:
+            entry["matcher"] = matcher
+        hooks.setdefault(event, []).append(entry)
+    save(settings, s)
+    for event, _, _ in missing:
+        ok(f"hook {event} added")
+
+try:
+    c = load(claude_json)
+except json.JSONDecodeError as exc:
+    bad(f"{claude_json} is not valid JSON ({exc}) — refusing to touch it")
+    sys.exit(rc or 1)
+
+def dsn():
+    """The MCP server has no ~/.ccx/config.toml fallback; it needs the env var."""
+    env = os.environ.get("CCX_DATABASE_URL")
+    if env:
+        return env
+    cfg = os.path.expanduser("~/.ccx/config.toml")
+    if os.path.exists(cfg):
+        for line in open(cfg):
+            k, _, v = line.partition("=")
+            if k.strip() == "database_url":
+                return v.strip().strip("'\"")
+    return None
+
+want = {"command": "node", "args": [mcp]}
+have = (c.get("mcpServers") or {}).get("ccx")
+if have and have.get("args") == [mcp]:
+    if (have.get("env") or {}).get("CCX_DATABASE_URL"):
+        ok("mcp server ccx registered")
+    else:
+        bad("mcp server ccx has no CCX_DATABASE_URL in env — rerun with --install-global")
+elif not install:
+    bad("mcp server ccx not registered (or points elsewhere) — rerun with --install-global")
+else:
+    if os.path.exists(claude_json):
+        backup(claude_json)
+    servers = c.setdefault("mcpServers", {})
+    existing = servers.get("ccx", {})
+    env = dict(existing.get("env") or {})
+    if not env.get("CCX_DATABASE_URL"):
+        url = dsn()
+        if not url:
+            bad("no database_url to give the mcp server — fix ~/.ccx/config.toml first")
+            sys.exit(min(rc, 100))
+        env["CCX_DATABASE_URL"] = url
+    want["env"] = env
+    servers["ccx"] = want
+    save(claude_json, c)
+    ok("mcp server ccx registered")
+
+sys.exit(min(rc, 100))
+PY
+ERRORS=$((ERRORS + $?))
+set -e
+
+# ----------------------------------------------------------------- this repo
+head_ "Repo: $(pwd)"
+if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+  bad "not inside a git repo — ccx keys projects by first-commit SHA"
+elif [ -z "$(git rev-list -n1 --all 2>/dev/null)" ]; then
+  bad "repo has no commits yet — make one, then rerun"
+elif [ "$DO_INIT" = 0 ]; then
+  [ -f .ccx/project.toml ] && ok ".ccx/project.toml present" || note ".ccx/project.toml absent (--check, not writing)"
+elif [ "$ERRORS" != 0 ]; then
+  note "skipping init until the failures above are fixed"
+else
+  node "$CLI" init
+  ok "$(pwd)/.ccx/project.toml"
+  node "$CLI" digest >/dev/null 2>&1 && ok "digest renders" || bad "digest failed"
+fi
+
+if [ "$ERRORS" = 0 ]; then
+  printf '\n\033[32mccx is configured.\033[0m Start a new Claude Code session here to pick up the digest.\n'
+else
+  printf '\n\033[31m%s check(s) failed.\033[0m\n' "$ERRORS"
+  exit 1
+fi
