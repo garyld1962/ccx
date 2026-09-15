@@ -2,6 +2,44 @@
 
 [![CI](https://github.com/garyld1962/ccx/actions/workflows/ci.yml/badge.svg)](https://github.com/garyld1962/ccx/actions/workflows/ci.yml)
 
+## What it does for you
+
+When a Claude Code session ends, everything the agent knew about the work goes with it. The next
+session starts from a summary the agent writes about itself, and those summaries drift: tasks get
+marked done that were never committed, decisions get re-argued, and open questions get lost.
+
+ccx fixes that by recording what actually happened, as it happens, into a database the agent cannot
+edit after the fact. The next session opens with a short digest built from that record: the current
+plan, which intents are still open, which questions are waiting on you, recent decisions, and
+whether any "done" claim disagrees with git.
+
+In practice you get three things:
+
+- **Resume that you can trust.** The digest comes from logged events, not from the agent's memory.
+- **No repeated work.** Decisions and their reasons are on file, so a new session does not re-derive
+  them.
+- **A check on completion claims.** `ccx drift` compares what the agent said it finished against
+  what is actually committed.
+
+## How you use it
+
+Set it up once per machine, then once per repo (see [Quick start](#quick-start)). After that there
+is nothing to do in a normal session. Claude Code hooks record session start and end, task creation
+and completion, and file edits. The agent posts plans, decisions, questions, and your corrections
+through the MCP tools. The digest is injected at the start of every session automatically.
+
+The commands you will reach for by hand:
+
+```bash
+ccx digest      # the resume view for the current repo
+ccx blocked     # open questions and blocked intents waiting on you
+ccx drift       # do the agent's "done" claims match git?  exits 2 if not
+ccx tail        # last 20 events, newest first
+ccx replay <session-id>   # the full event stream for one session
+```
+
+## Why it is built this way
+
 A typed, append-only event log and resume system for Claude Code. Instead of asking an agent to
 maintain a free-form `Session.md` — which drifts, because prose always does — ccx records
 schema-validated events to Postgres, so resuming a session means querying ground truth rather than
@@ -37,8 +75,9 @@ test command and exit code if tests ran.
 
 ## Status
 
-Phase 1 revised (hooks-based capture). **8 event types are implemented**; `Assumption`, `Discovery`,
-`Issue`, `Revert`, and `PlanComplete` are reserved names deferred to Phase 2 — validating a payload
+Phase 1 revised (hooks-based capture). **8 event types are implemented**: `Plan`, `Intent`,
+`IntentStatus`, `Decision`, `Question`, `Artifact`, `HumanFeedback`, and `Checkpoint`. `Assumption`,
+`Discovery`, `Issue`, `Revert`, and `PlanComplete` are reserved names deferred to Phase 2 — validating a payload
 for those throws. Plan 3 adds a SQLite local fallback.
 
 ## Quick start
@@ -50,9 +89,9 @@ pnpm install && pnpm build
 printf 'database_url = "postgresql://user:pass@host:5432/ccx"\n' > ~/.ccx/config.toml
 chmod 600 ~/.ccx/config.toml     # hooks read from here, not the environment
 
-# 2. Apply migrations
-psql "$(python3 -c "import tomllib,os;print(tomllib.load(open(os.path.expanduser('~/.ccx/config.toml'),'rb'))['database_url'])")" \
-  -f packages/storage/drizzle/0001_*.sql
+# 2. Apply migrations, in order (0000 creates the tables, 0001 alters them)
+DSN="$(python3 -c "import tomllib,os;print(tomllib.load(open(os.path.expanduser('~/.ccx/config.toml'),'rb'))['database_url'])")"
+for f in packages/storage/drizzle/*.sql; do psql "$DSN" -f "$f"; done
 
 # 3. Put `ccx` and `ccx-configure` on PATH, and register the hooks + MCP server
 ./scripts/ccx-configure --install-path --install-global
